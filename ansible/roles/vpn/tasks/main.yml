@@ -1,0 +1,38 @@
+---
+- name: Update 
+  command: yum update -y
+
+- name: Upgrade
+  command: yum upgrade -y
+
+- name: Install OpenVPN
+  yum:
+    name: openvpn
+    state: present
+
+- name: Download angri​stan’s OpenVPN installer script
+  get_url:
+    url: https://raw.githubusercontent.com/angristan/openvpn-install/refs/heads/master/openvpn-install.sh
+    dest: /tmp/openvpn-install.sh
+    mode: '0755'
+
+- name: Run the OpenVPN installer in non-interactive mode
+  # The upstream script supports environment variables to avoid interactiveness.
+  # We can pre-set PUBLIC_IP, PROTOCOL, DNS, etc. For example:
+  shell: |
+    export AUTO_INSTALL=y
+    export SERVER_IP="{{ ansible_host }}"      # ansible_host is your target IP
+    export PROTOCOL=UDP
+    export PORT=1194
+    export DNS=11         
+    export CLIENT_NAME=myclient
+    /tmp/openvpn-install.sh
+  # args:
+  #   creates: /etc/openvpn/server.conf
+  become: true
+
+- name: Fetch the newly generated client .ovpn from the server
+  ansible.builtin.fetch:
+    src: "/home/ec2-user/client.ovpn"
+    dest: "../clients/client.ovpn"
+  become: true

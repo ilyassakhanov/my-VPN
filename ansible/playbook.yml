@@ -1,0 +1,5 @@
+- name: Prepare and install OpenVPN
+  hosts: webservers
+  become: true
+  roles:
+    - vpn
