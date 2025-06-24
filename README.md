@@ -20,14 +20,22 @@ OpenVPN client
  - To minimize costs, use default VPC and subnets, internet gateway and route tables\
  To achieve that, use terraform plan & terraform import commands
  - Run commands to spin up your VPN
+
+ ### Start up
  ```
-  ./setup.sh
+  ./setup.sh start --key /your/key/path/key.pem
  ```
 
  ### Connect to VPN
-```
-Choose my-client.ovpn file in clients directory
-```
+
+1. Click File in OpenVPN client
+2. Choose my-client.ovpn file in clients directory
+3. Enjoy 😃
+
+ ### Shut down
+ ```
+  ./setup.sh stop
+ ```
 
 ### Limitaions
  - Bandwidth is limited and it can be preety slow

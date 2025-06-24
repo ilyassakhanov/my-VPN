@@ -1,4 +1,5 @@
 .DS_Store
+ansible/inventory.ini
 terraform/.terraform
 terraform/.terraform.lock.hcl
 clients/*
