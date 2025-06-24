@@ -65,13 +65,8 @@ case "$COMMAND" in
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --key)
-          if [[ -n "$2" && "$2" != --* ]]; then
-            KEY_PATH="$2"
-            shift 2
-          else
-            echo "❌ --key requires a path argument."
-            print_help
-          fi
+          KEY_PATH="$2"
+          shift 2
           ;;
         --help)
           print_help
@@ -82,6 +77,14 @@ case "$COMMAND" in
           ;;
       esac
     done
+
+# Checking if key is provided
+ if [[ -z $KEY_PATH ]]; then
+    echo "❌ --key requires a path argument."
+    print_help
+    exit 1;
+  fi
+
 
     echo "🟢 Spinning up VPN server"
     create_vpn_server
