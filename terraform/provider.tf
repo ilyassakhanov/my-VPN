@@ -6,10 +6,10 @@ terraform {
    }
  }
 
-  backend "s3" {
-   bucket = "ilyas-tfstate"
-   key    = "state"
-   region = "eu-central-1"
- }
+#   backend "s3" {
+#    bucket = "ilyas-tfstate"
+#    key    = "state"
+#    region = "eu-central-1"
+#  }
 
 }

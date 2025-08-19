@@ -3,18 +3,23 @@
 # Function to print help message
 print_help() {
   echo "Usage:"
-  echo "  $0 start --key /path/to/key.pem"
+  echo "  $0 start --region eu-central-1"
   echo "  $0 stop"
   echo ""
   echo "Options:"
-  echo "  --key    Path to PEM key (only for 'start')"
+  echo "  --region    Which AWS region to create VPN to (only for 'start')"
   echo "  --help   Show this help message"
   exit 0
 }
 
 create_vpn_server() {
+ # TODO: Import a subnet into tfstate
+  TF_VAR_AZ=$(aws ec2 describe-subnets --region $REGION --query "Subnets[0].AvailabilityZone")
+  SubnetID=$(aws ec2 describe-subnets --region $REGION --query "Subnets[0].SubnetId")
+
   # applying terraform
-  cd ./terraform && terraform apply --auto-approve
+  cd ./terraform && terraform import aws_default_subnet.public_subnet1 $SubnetID
+  terraform apply --auto-approve --var='AZ=${TF_VAR_AZ}'
 
   # setting server ip as a variable
   EC2_PUBLIC_IP=$(terraform output -raw web_instance_public_ip)
@@ -64,8 +69,8 @@ case "$COMMAND" in
     # Parse additional flags
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --key)
-          KEY_PATH="$2"
+        --region)
+          REGION="$2"
           shift 2
           ;;
         --help)
@@ -79,8 +84,8 @@ case "$COMMAND" in
     done
 
 # Checking if key is provided
- if [[ -z $KEY_PATH ]]; then
-    echo "❌ --key requires a path argument."
+ if [[ -z $REGION ]]; then
+    echo "❌ --region requires an AWS region name."
     print_help
     exit 1;
   fi
