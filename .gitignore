@@ -3,3 +3,6 @@ ansible/inventory.ini
 terraform/.terraform
 terraform/.terraform.lock.hcl
 clients/*
+terraform.tfstate
+terraform.tfstate.*
+terraform/myKey.pem
