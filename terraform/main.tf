@@ -1,38 +1,32 @@
-provider "aws" {
-  region = var.region
+data "aws_ami" "ubuntu_22_04" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
 }
 
+resource "aws_instance" "vpn_server" {
+  ami                         = data.aws_ami.ubuntu_22_04.id
+  instance_type               = "t2.micro"
+  key_name                    = var.key_name
+  subnet_id                   = aws_default_subnet.public_subnet1.id
+  vpc_security_group_ids      = [aws_security_group.web_sg.id]
+  associate_public_ip_address = true
 
+  tags = {
+    Name = "vpn-server"
+  }
+}
 
-# resource "aws_s3_bucket" "terraform_state" {
-#   bucket = "ilyas-tfstate"
-
-#   # Prevent accidental deletion of this S3 bucket
-#   lifecycle {
-#     prevent_destroy = true
-#   }
-#   tags = {
-#     Name        = "states bucket for Telegram bot"
-#     Environment = "Dev"
-#   }
-# }
-
-# resource "aws_s3_bucket_versioning" "terraform_state" {
-#   bucket = aws_s3_bucket.terraform_state.id
-
-#   versioning_configuration {
-#     status = "Enabled"
-#   }
-# }
-
-# resource "aws_dynamodb_table" "terraform_state_lock" {
-#   name           = "state"
-#   read_capacity  = 1
-#   write_capacity = 1
-#   hash_key       = "LockID"
-
-#   attribute {
-#     name = "LockID"
-#     type = "S"
-#   }
-# }
+output "web_instance_public_ip" {
+  description = "The public IP address of the VPN server"
+  value       = aws_instance.vpn_server.public_ip
+}

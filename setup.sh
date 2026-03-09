@@ -1,72 +1,136 @@
 #!/bin/bash
 
-# Function to print help message
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TERRAFORM_DIR="$SCRIPT_DIR/terraform"
+ANSIBLE_DIR="$SCRIPT_DIR/ansible"
+CLIENTS_DIR="$SCRIPT_DIR/clients"
+
 print_help() {
   echo "Usage:"
-  echo "  $0 start --region eu-central-1"
+  echo "  $0 start [--region <aws-region>]  (default: eu-central-1)"
   echo "  $0 stop"
   echo ""
   echo "Options:"
-  echo "  --region    Which AWS region to create VPN to (only for 'start')"
-  echo "  --help   Show this help message"
+  echo "  --region    AWS region to create VPN in (only for 'start')"
+  echo "  --help      Show this help message"
   exit 0
 }
 
+# Returns the workspace name that has a running EC2 instance, or empty string
+get_active_workspace() {
+  pushd "$TERRAFORM_DIR" > /dev/null
+  local found=""
+  for workspace in $(terraform workspace list | sed 's/^\* //' | tr -d ' ' | grep -v '^$' | grep -v '^default$'); do
+    terraform workspace select "$workspace" > /dev/null 2>&1
+    if terraform state list aws_instance.vpn_server > /dev/null 2>&1; then
+      instance_state=$(aws ec2 describe-instances \
+        --region "$workspace" \
+        --filters "Name=tag:Name,Values=vpn-server" "Name=instance-state-name,Values=running" \
+        --query "Reservations[0].Instances[0].State.Name" \
+        --output text 2>/dev/null)
+      if [[ "$instance_state" == "running" ]]; then
+        found="$workspace"
+        break
+      fi
+    fi
+  done
+  popd > /dev/null
+  echo "$found"
+}
+
 create_vpn_server() {
- # TODO: Import a subnet into tfstate
-  TF_VAR_AZ=$(aws ec2 describe-subnets --region $REGION --query "Subnets[0].AvailabilityZone")
-  SubnetID=$(aws ec2 describe-subnets --region $REGION --query "Subnets[0].SubnetId")
+  TF_VAR_AZ=$(aws ec2 describe-subnets --region "$REGION" --query "Subnets[0].AvailabilityZone" --output text)
+  SubnetID=$(aws ec2 describe-subnets --region "$REGION" --query "Subnets[0].SubnetId" --output text)
 
-  # applying terraform
-  cd ./terraform && terraform import aws_default_subnet.public_subnet1 $SubnetID
-  terraform apply --auto-approve --var='AZ=${TF_VAR_AZ}'
+  pushd "$TERRAFORM_DIR" > /dev/null
 
-  # setting server ip as a variable
+  # Create or select a workspace for this region
+  terraform workspace new "$REGION" 2>/dev/null || terraform workspace select "$REGION"
+
+  IMPORT_VARS=(--var="AZ=$TF_VAR_AZ" --var="region=$REGION")
+
+  # Import the default VPC if it isn't already tracked in this workspace's state
+  if ! terraform state list aws_default_vpc.default > /dev/null 2>&1; then
+    VpcID=$(aws ec2 describe-vpcs --region "$REGION" --filters Name=isDefault,Values=true --query "Vpcs[0].VpcId" --output text)
+    terraform import "${IMPORT_VARS[@]}" aws_default_vpc.default "$VpcID"
+  fi
+
+  # Import the default subnet if it isn't already tracked in this workspace's state
+  if ! terraform state list aws_default_subnet.public_subnet1 > /dev/null 2>&1; then
+    terraform import "${IMPORT_VARS[@]}" aws_default_subnet.public_subnet1 "$SubnetID"
+  fi
+
+  # Import the security group if it exists in AWS but not in state
+  if ! terraform state list aws_security_group.web_sg > /dev/null 2>&1; then
+    SG_ID=$(aws ec2 describe-security-groups --region "$REGION" \
+      --filters "Name=group-name,Values=web-sg" \
+      --query "SecurityGroups[0].GroupId" --output text 2>/dev/null)
+    if [[ -n "$SG_ID" && "$SG_ID" != "None" ]]; then
+      terraform import "${IMPORT_VARS[@]}" aws_security_group.web_sg "$SG_ID"
+    fi
+  fi
+
+  # If the key pair exists in AWS but not in state, delete it so Terraform recreates it
+  # (tls_private_key won't be in state either, so importing would cause a replace anyway)
+  if ! terraform state list aws_key_pair.kp > /dev/null 2>&1; then
+    if aws ec2 describe-key-pairs --region "$REGION" --key-names myKey > /dev/null 2>&1; then
+      echo "Key pair 'myKey' exists in AWS but not in state — deleting so Terraform can recreate it."
+      aws ec2 delete-key-pair --region "$REGION" --key-name myKey
+    fi
+  fi
+
+  terraform apply --auto-approve --var="AZ=$TF_VAR_AZ" --var="region=$REGION" || {
+    popd > /dev/null
+    echo "Terraform apply failed. Aborting."
+    exit 1
+  }
+
   EC2_PUBLIC_IP=$(terraform output -raw web_instance_public_ip)
 
-  # creating inventory for ansible
-  cat <<EOF > ../ansible/inventory.ini
+  if [[ ! -f "$KEY_PATH" ]]; then
+    terraform output -raw private_key_pem > "$KEY_PATH"
+    chmod 600 "$KEY_PATH"
+  fi
+
+  popd > /dev/null
+
+  cat <<EOF > "$ANSIBLE_DIR/inventory.ini"
 [webservers]
-$EC2_PUBLIC_IP ansible_user=ec2-user ansible_ssh_private_key_file=$KEY_PATH
+$EC2_PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=$KEY_PATH
 EOF
 }
 
 destroy_vpn_server() {
-  # Destroying vpn server
-  cd ./terraform && terraform destroy --target aws_instance.vpn_server --auto-approve
+  local region="$1"
+  local az
+  az=$(aws ec2 describe-subnets --region "$region" --query "Subnets[0].AvailabilityZone" --output text)
+  pushd "$TERRAFORM_DIR" > /dev/null
+  terraform destroy --target aws_instance.vpn_server --auto-approve --var="AZ=$az" --var="region=$region"
+  popd > /dev/null
 }
 
 setup_vpn_server() {
-  # Sets up a vpn server with ansible
-
-  # Wiping old clients
-  rm -rf ./clients/*
-
-  # Disable are you sure you want to continue connecting
+  chmod 600 "$KEY_PATH"
+  rm -rf "$CLIENTS_DIR"/*
   export ANSIBLE_HOST_KEY_CHECKING=False
-  # Setting up OpenVPN and pulling config
-  cd ../ansible && ansible-playbook -i inventory.ini playbook.yml
-
-  # Moving client to clients directory
-  mv ../clients/client.ovpn/*/home/ec2-user/client.ovpn ../clients/my-client.ovpn
+  pushd "$ANSIBLE_DIR" > /dev/null
+  ansible-playbook -i inventory.ini playbook.yml
+  popd > /dev/null
+  mv "$CLIENTS_DIR"/client.ovpn/*/home/ubuntu/myclient.ovpn "$CLIENTS_DIR/my-client.ovpn"
 }
 
 # No arguments? Show help and exit
 if [[ $# -eq 0 ]]; then
-  echo "❌ No arguments provided."
+  echo "No arguments provided."
   print_help
 fi
 
-# Parse the command (first argument)
 COMMAND="$1"
 shift
 
-KEY_PATH=""
-
-# Parse arguments
 case "$COMMAND" in
   start)
-    # Parse additional flags
+    REGION=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --region)
@@ -77,35 +141,51 @@ case "$COMMAND" in
           print_help
           ;;
         *)
-          echo "❌ Unknown option for 'start': $1"
+          echo "Unknown option for 'start': $1"
           print_help
           ;;
       esac
     done
 
-# Checking if key is provided
- if [[ -z $REGION ]]; then
-    echo "❌ --region requires an AWS region name."
-    print_help
-    exit 1;
-  fi
+    if [[ -z "$REGION" ]]; then
+      REGION="eu-central-1"
+      echo "No --region specified, defaulting to $REGION."
+    fi
 
+    KEY_PATH="$TERRAFORM_DIR/myKey-$REGION.pem"
 
-    echo "🟢 Spinning up VPN server"
+    active=$(get_active_workspace)
+    if [[ -n "$active" ]]; then
+      echo "A VPN is already running in region: $active"
+      echo "Run './setup.sh stop' before starting a new one."
+      exit 1
+    fi
+
+    echo "Spinning up VPN in $REGION..."
     create_vpn_server
-    # Give some time for a server to be configured by AWS
     sleep 15
     setup_vpn_server
+    echo "Done. Import clients/my-client.ovpn into your OpenVPN client."
     ;;
 
   stop)
     if [[ $# -gt 0 ]]; then
-      echo "❌ 'stop' does not take any arguments."
+      echo "'stop' does not take any arguments."
       print_help
     fi
-    echo "🔴 Stopping..."
-    # Destroynig vpn server
-    destroy_vpn_server
+
+    active=$(get_active_workspace)
+    if [[ -z "$active" ]]; then
+      echo "No VPN is currently running."
+      exit 1
+    fi
+
+    echo "Stopping VPN in region: $active..."
+    pushd "$TERRAFORM_DIR" > /dev/null
+    terraform workspace select "$active"
+    popd > /dev/null
+    destroy_vpn_server "$active"
+    echo "VPN stopped."
     ;;
 
   --help|-h)
@@ -113,8 +193,7 @@ case "$COMMAND" in
     ;;
 
   *)
-    echo "❌ Unknown command: $COMMAND"
+    echo "Unknown command: $COMMAND"
     print_help
+    ;;
 esac
-
-
