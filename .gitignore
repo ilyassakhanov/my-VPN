@@ -5,4 +5,4 @@ terraform/.terraform.lock.hcl
 clients/*
 terraform.tfstate
 terraform.tfstate.*
-terraform/myKey.pem
+terraform/myKey*.pem
